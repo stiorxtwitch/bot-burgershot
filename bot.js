@@ -1,8 +1,5 @@
 // ============================================
-// BURGER SHOT — Bot Discord
-// ============================================
-// npm install discord.js @supabase/supabase-js node-fetch express bcryptjs cors
-// Node.js 18+
+// BURGER SHOT — Bot Discord + Admin Panel
 // ============================================
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
@@ -14,7 +11,7 @@ const cors = require('cors');
 const app = express();
 app.use(express.json());
 
-// ── CORS (corrigé avec tes domaines Vercel) ──
+// ── CORS (avec tes domaines Vercel) ─────────────
 app.use(cors({
   origin: [
     'https://stiorxtwitch.github.io',
@@ -24,53 +21,144 @@ app.use(cors({
     'http://127.0.0.1:5500',
     'http://localhost:3000'
   ],
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
   credentials: true
 }));
 
-// Gestion des requêtes preflight OPTIONS
-app.options('*', (req, res) => {
-  res.sendStatus(200);
-});
+app.options('*', (req, res) => res.sendStatus(200));
 
 const PORT = process.env.PORT || 3000;
 
+// ── Routes basiques ──────────────────────────
 app.get('/', (req, res) => {
-  res.json({
-    status: 'online',
-    bot: client.user?.tag || 'connecting...',
-    uptime: Math.floor(process.uptime()) + 's',
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ status: 'online' });
 });
 
 app.get('/ping', (req, res) => {
   res.json({ pong: true, timestamp: new Date().toISOString() });
 });
 
-// ── API : Récupérer tous les aliments ────────
-app.get('/api/aliments', async (req, res) => {
+// ====================== ADMIN API ======================
+
+// 1. Récupérer tous les utilisateurs
+app.get('/api/admin/users', async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('aliments_burgershot')
-      .select('*')
-      .order('category', { ascending: true })
-      .order('name', { ascending: true });
+      .from('users_burgershot')
+      .select('id, username, discord_username, permission, created_at')
+      .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Erreur Supabase /api/aliments:', error);
-      return res.status(500).json({ success: false, error: error.message });
-    }
-
-    res.json(data || []);
+    if (error) return res.status(500).json({ success: false, error: error.message });
+    res.json({ success: true, users: data || [] });
   } catch (err) {
-    console.error('Erreur serveur /api/aliments:', err);
+    console.error('Erreur /api/admin/users:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ── API : Vérification username Discord ─────
+// 2. Créer un utilisateur depuis l'admin
+app.post('/api/admin/register', async (req, res) => {
+  const { username, discord_username, discord_user_id, password, permission } = req.body;
+
+  if (!username || !discord_username || !discord_user_id || !password) {
+    return res.json({ success: false, error: 'Champs manquants' });
+  }
+
+  try {
+    // Vérifier username
+    const { data: existingUser } = await supabase
+      .from('users_burgershot')
+      .select('id')
+      .eq('username', username.toLowerCase())
+      .single();
+    if (existingUser) return res.json({ success: false, error: 'username_taken' });
+
+    // Vérifier discord_username
+    const { data: existingDiscord } = await supabase
+      .from('users_burgershot')
+      .select('id')
+      .eq('discord_username', discord_username.toLowerCase())
+      .single();
+    if (existingDiscord) return res.json({ success: false, error: 'discord_taken' });
+
+    const password_hash = await bcrypt.hash(password, 12);
+
+    const { data: newUser, error } = await supabase
+      .from('users_burgershot')
+      .insert({
+        username: username.toLowerCase(),
+        discord_username: discord_username.toLowerCase(),
+        discord_user_id,
+        password_hash,
+        permission: permission || null
+      })
+      .select()
+      .single();
+
+    if (error) return res.json({ success: false, error: error.message });
+
+    return res.json({ success: true, user: { id: newUser.id, username: newUser.username } });
+  } catch (err) {
+    console.error('Erreur admin/register:', err);
+    return res.json({ success: false, error: err.message });
+  }
+});
+
+// 3. Supprimer un utilisateur
+app.delete('/api/admin/users/:id', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('users_burgershot')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) return res.status(500).json({ success: false, error: error.message });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. Ajouter un aliment
+app.post('/api/admin/aliments', async (req, res) => {
+  const { name, description, price, category } = req.body;
+  if (!name || !price || !category) {
+    return res.json({ success: false, error: 'Nom, prix et catégorie sont requis' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('aliments_burgershot')
+      .insert({ name, description, price: parseInt(price), category })
+      .select()
+      .single();
+
+    if (error) return res.json({ success: false, error: error.message });
+    res.json({ success: true, aliment: data });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// 5. Supprimer un aliment
+app.delete('/api/admin/aliments/:id', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('aliments_burgershot')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) return res.status(500).json({ success: false, error: error.message });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ====================== TES ROUTES EXISTANTES ======================
+
+// API : Vérification username Discord
 app.post('/api/verify-discord', async (req, res) => {
   const { discord_username } = req.body;
   if (!discord_username) return res.json({ found: false, error: 'Manquant' });
@@ -96,7 +184,7 @@ app.post('/api/verify-discord', async (req, res) => {
   }
 });
 
-// ── API : Inscription ────────────────────────
+// API : Inscription
 app.post('/api/register', async (req, res) => {
   const { username, discord_username, discord_user_id, password } = req.body;
   if (!username || !discord_username || !password || !discord_user_id)
@@ -137,11 +225,10 @@ app.post('/api/register', async (req, res) => {
       const embed = new EmbedBuilder()
         .setColor(0xCC1A1A)
         .setTitle('🍔 Bienvenue chez Burger Shot !')
-        .setDescription('Ton compte a bien été créé sur notre plateforme de commande.')
+        .setDescription('Ton compte a bien été créé.')
         .addFields(
           { name: '👤 Username', value: `\`${username.toLowerCase()}\``, inline: true },
           { name: '🎮 Discord', value: `\`${discord_username}\``, inline: true },
-          { name: '🌐 Commander', value: 'Connecte-toi sur notre site pour passer ta commande !', inline: false },
         )
         .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
         .setTimestamp();
@@ -157,7 +244,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// ── API : Connexion ──────────────────────────
+// API : Connexion
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.json({ success: false, error: 'Champs manquants' });
@@ -189,45 +276,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ── API : Récupération par Discord username ──
-app.post('/api/forgot', async (req, res) => {
-  const { discord_username } = req.body;
-  if (!discord_username) return res.json({ success: false, error: 'Manquant' });
-
-  try {
-    const { data: user } = await supabase
-      .from('users_burgershot')
-      .select('*')
-      .eq('discord_username', discord_username.toLowerCase())
-      .single();
-
-    if (!user) return res.json({ success: false, error: 'Aucun compte associé à ce Discord' });
-
-    try {
-      const discordUser = await client.users.fetch(user.discord_user_id);
-      const embed = new EmbedBuilder()
-        .setColor(0xF5A623)
-        .setTitle('🔑 Récupération de compte — Burger Shot')
-        .setDescription('Tu as demandé à retrouver tes identifiants.')
-        .addFields(
-          { name: '👤 Ton username', value: `\`${user.username}\``, inline: true },
-          { name: '🎮 Discord lié', value: `\`${user.discord_username}\``, inline: true },
-          { name: '⚠️ Mot de passe', value: 'Pour des raisons de sécurité, le mot de passe ne peut pas être récupéré.', inline: false },
-        )
-        .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
-        .setTimestamp();
-      await discordUser.send({ embeds: [embed] });
-    } catch (e) {
-      console.warn('DM forgot impossible:', e.message);
-    }
-
-    return res.json({ success: true, username: user.username });
-  } catch (err) {
-    return res.json({ success: false, error: err.message });
-  }
-});
-
-// ── API : Passer une commande ────────────────
+// API : Passer une commande
 app.post('/api/order', async (req, res) => {
   const { user_id, discord_username, discord_user_id, first_name, last_name, phone, delivery_type, address, zip_code, items, total } = req.body;
   if (!user_id || !items || !total)
@@ -267,7 +316,7 @@ app.post('/api/order', async (req, res) => {
   }
 });
 
-// ── API : Liste commandes d'un utilisateur ───
+// API : Liste commandes
 app.get('/api/orders', async (req, res) => {
   const { user_id } = req.query;
   if (!user_id) return res.json({ success: false, error: 'user_id manquant' });
@@ -286,7 +335,7 @@ app.get('/api/orders', async (req, res) => {
   }
 });
 
-// ── API : Statut commande ────────────────────
+// API : Statut commande
 app.get('/api/order/:id', async (req, res) => {
   const { data: order } = await supabase
     .from('orders_burgershot')
@@ -312,18 +361,11 @@ app.listen(PORT, () => {
 
 // ── Keep-Alive ───────────────────────────────
 const RENDER_URL = process.env.RENDER_URL;
-function startKeepAlive() {
-  if (!RENDER_URL) {
-    console.warn('⚠️ RENDER_URL non défini — keep-alive désactivé');
-    return;
-  }
+if (RENDER_URL) {
   setInterval(async () => {
     try {
-      const res = await fetch(`${RENDER_URL}/ping`);
-      console.log(`🏓 Keep-alive ping OK — ${new Date().toISOString()}`);
-    } catch (err) {
-      console.error('❌ Keep-alive ping échoué:', err.message);
-    }
+      await fetch(`${RENDER_URL}/ping`);
+    } catch (e) {}
   }, 5 * 60 * 1000);
 }
 
@@ -337,7 +379,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const REQUIRED_ENV = ['DISCORD_TOKEN', 'GUILD_ID', 'ORDERS_CATEGORY_ID', 'SUPABASE_URL', 'SUPABASE_KEY'];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
-    console.error(`❌ Variable d'environnement manquante : ${key}`);
+    console.error(`❌ Variable manquante : ${key}`);
     process.exit(1);
   }
 }
@@ -371,7 +413,6 @@ const STATUS_LABELS = {
 client.once('ready', async () => {
   console.log(`✅ Bot connecté : ${client.user.tag}`);
   setInterval(checkNotifications, 8000);
-  startKeepAlive();
 });
 
 // ── POLL NOTIFICATIONS ───────────────────────
@@ -380,8 +421,7 @@ async function checkNotifications() {
     const { data: notifs, error } = await supabase
       .from('discord_notifications_burgershot')
       .select('*')
-      .eq('processed', false)
-      .order('created_at', { ascending: true });
+      .eq('processed', false);
 
     if (error || !notifs?.length) return;
 
@@ -466,8 +506,6 @@ async function handleNewOrder(orderId) {
     '`^^terminer` — Marquer comme terminée',
     '`^^regler` — Marquer comme réglée',
     '`^^contact <message>` — Envoyer un message au client',
-    '',
-    '> Chaque action notifie automatiquement le client via Discord DM.',
   ].filter(Boolean).join('\n');
 
   await channel.send({ embeds: [embed] });
@@ -502,11 +540,9 @@ async function notifyClient(order, statusLabel, extraMessage = null) {
     const user = await client.users.fetch(order.discord_user_id);
     const embed = new EmbedBuilder()
       .setColor(0xCC1A1A)
-      .setTitle(`🍔 Mise à jour commande #${order.id} — Burger Shot`)
+      .setTitle(`🍔 Mise à jour commande #${order.id}`)
       .addFields({ name: '📌 Nouveau statut', value: statusLabel, inline: false });
-    if (extraMessage) {
-      embed.addFields({ name: '💬 Message de l\'équipe', value: extraMessage, inline: false });
-    }
+    if (extraMessage) embed.addFields({ name: '💬 Message', value: extraMessage });
     embed.setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' }).setTimestamp();
     await user.send({ embeds: [embed] });
   } catch (e) {
@@ -529,23 +565,17 @@ client.on('messageCreate', async (message) => {
 
   if (!order) return;
 
-  // ^^accepter
   if (content === '^^accepter') {
     await supabase.from('orders_burgershot').update({ status: 'acceptee' }).eq('id', order.id);
     await notifyClient({ ...order, status: 'acceptee' }, STATUS_LABELS['acceptee']);
-    const embed = new EmbedBuilder()
-      .setColor(0x22c55e)
-      .setTitle('✅ Commande acceptée')
-      .setDescription(`Commande #${order.id} → **${STATUS_LABELS['acceptee']}**`)
-      .setTimestamp();
+    const embed = new EmbedBuilder().setColor(0x22c55e).setTitle('✅ Commande acceptée').setDescription(`Commande #${order.id} → **${STATUS_LABELS['acceptee']}**`).setTimestamp();
     await message.channel.send({ embeds: [embed] });
     await message.react('✅');
     return;
   }
 
-  // ^^refuser
   if (content.startsWith('^^refuser')) {
-    const reason = content.slice('^^refuser'.length).trim() || 'Aucune raison précisée';
+    const reason = content.slice('^^refuser'.length).trim() || 'Aucune raison';
     await supabase.from('orders_burgershot').update({ status: 'refusee', refusal_reason: reason }).eq('id', order.id);
 
     if (order.discord_user_id) {
@@ -554,27 +584,18 @@ client.on('messageCreate', async (message) => {
         const embed = new EmbedBuilder()
           .setColor(0xef4444)
           .setTitle(`❌ Commande #${order.id} refusée`)
-          .addFields(
-            { name: '📌 Statut', value: STATUS_LABELS['refusee'], inline: true },
-            { name: '💬 Raison', value: reason, inline: false }
-          )
+          .addFields({ name: 'Raison', value: reason })
           .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
           .setTimestamp();
         await user.send({ embeds: [embed] });
-      } catch (e) { console.warn('DM refus impossible:', e.message); }
+      } catch (e) {}
     }
-
-    const embed = new EmbedBuilder()
-      .setColor(0xef4444)
-      .setTitle('❌ Commande refusée')
-      .setDescription(`Commande #${order.id} refusée\n**Raison :** ${reason}`)
-      .setTimestamp();
+    const embed = new EmbedBuilder().setColor(0xef4444).setTitle('❌ Commande refusée').setDescription(`Commande #${order.id} refusée\nRaison : ${reason}`).setTimestamp();
     await message.channel.send({ embeds: [embed] });
     await message.react('❌');
     return;
   }
 
-  // Statuts simples
   const statusMap = {
     '^^recue': 'recue',
     '^^preparation': 'preparation',
@@ -602,10 +623,9 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // ^^contact
   if (content.startsWith('^^contact ')) {
     const msg = content.slice('^^contact '.length).trim();
-    if (!msg) return message.reply('❌ Syntaxe : `^^contact <votre message>`');
+    if (!msg) return message.reply('❌ Syntaxe : `^^contact <message>`');
 
     await supabase.from('orders_burgershot').update({ ml_message: msg }).eq('id', order.id);
     await supabase.from('discord_messages_burgershot').insert({
@@ -619,23 +639,21 @@ client.on('messageCreate', async (message) => {
         const user = await client.users.fetch(order.discord_user_id);
         const dmEmbed = new EmbedBuilder()
           .setColor(0x4f7af8)
-          .setTitle(`💬 Message de l'équipe — Commande #${order.id}`)
+          .setTitle(`💬 Message équipe — Commande #${order.id}`)
           .setDescription(msg)
           .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
           .setTimestamp();
         await user.send({ embeds: [dmEmbed] });
-      } catch (e) { console.warn('DM contact impossible:', e.message); }
+      } catch (e) {}
     }
 
     const embed = new EmbedBuilder()
       .setColor(0x4f7af8)
-      .setTitle('💬 Message envoyé au client')
+      .setTitle('💬 Message envoyé')
       .setDescription(msg)
-      .setFooter({ text: 'Message envoyé via Discord DM' })
       .setTimestamp();
     await message.channel.send({ embeds: [embed] });
     await message.react('📨');
-    return;
   }
 });
 
