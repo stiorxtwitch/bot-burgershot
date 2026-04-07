@@ -22,6 +22,8 @@ app.use(cors({
     'http://localhost:5500',
     'http://127.0.0.1:5500',
     'http://localhost:3000',
+    'https://burgershot-liegecity.vercel.app', 
+    'https://burgershot-liegecity.vercel.app/',
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
