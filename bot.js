@@ -1,7 +1,7 @@
 // ============================================
 // BURGER SHOT — Bot Discord
 // ============================================
-// npm install discord.js @supabase/supabase-js node-fetch express bcryptjs
+// npm install discord.js @supabase/supabase-js node-fetch express bcryptjs cors
 // Node.js 18+
 // ============================================
 
@@ -9,10 +9,24 @@ const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const cors = require('cors'); // ← AJOUT CORS
 
 // ── EXPRESS SERVER (Keep-Alive Render) ──────
 const app = express();
 app.use(express.json());
+
+// ── CORS ─────────────────────────────────────
+app.use(cors({
+  origin: [
+    'https://stiorxtwitch.github.io',
+    'http://localhost:5500',
+    'http://127.0.0.1:5500',
+    'http://localhost:3000',
+  ],
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type'],
+}));
+
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
