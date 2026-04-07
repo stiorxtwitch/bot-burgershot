@@ -24,6 +24,7 @@ app.use(cors({
     'http://localhost:3000',
     'https://burgershot-liegecity.vercel.app', 
     'https://burgershot-liegecity.vercel.app/',
+    'https://burgershot-liegecity-mw0c4qo8e-stiorxtwitchs-projects.vercel.app',
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
