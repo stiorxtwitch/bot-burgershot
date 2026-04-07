@@ -7,11 +7,10 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const cors = require('cors');
 
-// ── EXPRESS SERVER ───────────────────────────
 const app = express();
 app.use(express.json());
 
-// ── CORS (avec tes domaines Vercel) ─────────────
+// ── CORS ─────────────────────────────────────
 app.use(cors({
   origin: [
     'https://stiorxtwitch.github.io',
@@ -31,17 +30,33 @@ app.options('*', (req, res) => res.sendStatus(200));
 const PORT = process.env.PORT || 3000;
 
 // ── Routes basiques ──────────────────────────
-app.get('/', (req, res) => {
-  res.json({ status: 'online' });
+app.get('/', (req, res) => res.json({ status: 'online' }));
+app.get('/ping', (req, res) => res.json({ pong: true, timestamp: new Date().toISOString() }));
+
+// ====================== ADMIN & PUBLIC API ======================
+
+// 1. Récupérer tous les aliments (utilisé par index.html et menu.html)
+app.get('/api/aliments', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('aliments_burgershot')
+      .select('*')
+      .order('category', { ascending: true })
+      .order('name', { ascending: true });
+
+    if (error) {
+      console.error('Erreur /api/aliments:', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    res.json(data || []);
+  } catch (err) {
+    console.error('Erreur serveur /api/aliments:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-app.get('/ping', (req, res) => {
-  res.json({ pong: true, timestamp: new Date().toISOString() });
-});
-
-// ====================== ADMIN API ======================
-
-// 1. Récupérer tous les utilisateurs
+// 2. Récupérer tous les utilisateurs (pour admin.html)
 app.get('/api/admin/users', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -57,7 +72,7 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
-// 2. Créer un utilisateur depuis l'admin
+// 3. Créer un utilisateur depuis l'admin
 app.post('/api/admin/register', async (req, res) => {
   const { username, discord_username, discord_user_id, password, permission } = req.body;
 
@@ -66,7 +81,6 @@ app.post('/api/admin/register', async (req, res) => {
   }
 
   try {
-    // Vérifier username
     const { data: existingUser } = await supabase
       .from('users_burgershot')
       .select('id')
@@ -74,7 +88,6 @@ app.post('/api/admin/register', async (req, res) => {
       .single();
     if (existingUser) return res.json({ success: false, error: 'username_taken' });
 
-    // Vérifier discord_username
     const { data: existingDiscord } = await supabase
       .from('users_burgershot')
       .select('id')
@@ -105,7 +118,7 @@ app.post('/api/admin/register', async (req, res) => {
   }
 });
 
-// 3. Supprimer un utilisateur
+// 4. Supprimer un utilisateur
 app.delete('/api/admin/users/:id', async (req, res) => {
   try {
     const { error } = await supabase
@@ -120,17 +133,22 @@ app.delete('/api/admin/users/:id', async (req, res) => {
   }
 });
 
-// 4. Ajouter un aliment
+// 5. Ajouter un aliment
 app.post('/api/admin/aliments', async (req, res) => {
   const { name, description, price, category } = req.body;
   if (!name || !price || !category) {
-    return res.json({ success: false, error: 'Nom, prix et catégorie sont requis' });
+    return res.json({ success: false, error: 'Nom, prix et catégorie requis' });
   }
 
   try {
     const { data, error } = await supabase
       .from('aliments_burgershot')
-      .insert({ name, description, price: parseInt(price), category })
+      .insert({ 
+        name, 
+        description, 
+        price: parseInt(price), 
+        category 
+      })
       .select()
       .single();
 
@@ -141,7 +159,7 @@ app.post('/api/admin/aliments', async (req, res) => {
   }
 });
 
-// 5. Supprimer un aliment
+// 6. Supprimer un aliment
 app.delete('/api/admin/aliments/:id', async (req, res) => {
   try {
     const { error } = await supabase
@@ -156,7 +174,7 @@ app.delete('/api/admin/aliments/:id', async (req, res) => {
   }
 });
 
-// ====================== TES ROUTES EXISTANTES ======================
+// ====================== TES ROUTES EXISTANTES (inchangées) ======================
 
 // API : Vérification username Discord
 app.post('/api/verify-discord', async (req, res) => {
@@ -369,7 +387,7 @@ if (RENDER_URL) {
   }, 5 * 60 * 1000);
 }
 
-// ── CONFIG ───────────────────────────────────
+// ── CONFIG DISCORD + SUPABASE ─────────────────
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const ORDERS_CATEGORY_ID = process.env.ORDERS_CATEGORY_ID;
@@ -421,7 +439,8 @@ async function checkNotifications() {
     const { data: notifs, error } = await supabase
       .from('discord_notifications_burgershot')
       .select('*')
-      .eq('processed', false);
+      .eq('processed', false)
+      .order('created_at', { ascending: true });
 
     if (error || !notifs?.length) return;
 
@@ -540,7 +559,7 @@ async function notifyClient(order, statusLabel, extraMessage = null) {
     const user = await client.users.fetch(order.discord_user_id);
     const embed = new EmbedBuilder()
       .setColor(0xCC1A1A)
-      .setTitle(`🍔 Mise à jour commande #${order.id}`)
+      .setTitle(`🍔 Mise à jour commande #${order.id} — Burger Shot`)
       .addFields({ name: '📌 Nouveau statut', value: statusLabel, inline: false });
     if (extraMessage) embed.addFields({ name: '💬 Message', value: extraMessage });
     embed.setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' }).setTimestamp();
