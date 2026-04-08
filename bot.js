@@ -1,7 +1,7 @@
 // ============================================
 // BURGER SHOT — Bot Discord + Admin Panel
 // ============================================
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -35,7 +35,7 @@ app.get('/ping', (req, res) => res.json({ pong: true, timestamp: new Date().toIS
 
 // ====================== ADMIN & PUBLIC API ======================
 
-// 1. Récupérer tous les aliments (utilisé par index.html et menu.html)
+// 1. Récupérer tous les aliments
 app.get('/api/aliments', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -56,7 +56,7 @@ app.get('/api/aliments', async (req, res) => {
   }
 });
 
-// 2. Récupérer tous les utilisateurs (pour admin.html)
+// 2. Récupérer tous les utilisateurs
 app.get('/api/admin/users', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -143,11 +143,11 @@ app.post('/api/admin/aliments', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('aliments_burgershot')
-      .insert({ 
-        name, 
-        description, 
-        price: parseInt(price), 
-        category 
+      .insert({
+        name,
+        description,
+        price: parseInt(price),
+        category
       })
       .select()
       .single();
@@ -174,7 +174,158 @@ app.delete('/api/admin/aliments/:id', async (req, res) => {
   }
 });
 
-// ====================== TES ROUTES EXISTANTES (inchangées) ======================
+// ====================== RECRUTEMENT API ======================
+
+// API : Soumettre une candidature
+app.post('/api/recruitment', async (req, res) => {
+  const {
+    first_name,
+    last_name,
+    age,
+    phone,
+    discord_username,
+    experience,
+    availability,
+    motivations,
+    worst_flaws
+  } = req.body;
+
+  if (!first_name || !last_name || !age || !phone || !discord_username || !experience || !motivations || !worst_flaws) {
+    return res.json({ success: false, error: 'Champs manquants' });
+  }
+
+  try {
+    // Chercher le membre Discord par username
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) return res.json({ success: false, error: 'Serveur Discord introuvable' });
+
+    await guild.members.fetch();
+    const member = guild.members.cache.find(
+      m => m.user.username.toLowerCase() === discord_username.toLowerCase() ||
+           (m.user.globalName && m.user.globalName.toLowerCase() === discord_username.toLowerCase())
+    );
+
+    if (!member) {
+      return res.json({ success: false, error: 'discord_not_found' });
+    }
+
+    // Vérifier si une candidature est déjà en cours pour cet utilisateur
+    const existingChannel = guild.channels.cache.find(
+      c => c.parentId === RECRUITMENT_CATEGORY_ID &&
+           c.name.startsWith('recrutement-') &&
+           !c.name.endsWith('-refuser') &&
+           !c.name.endsWith('-accepter')
+    );
+
+    // Compter les tickets de recrutement existants
+    const recruitChannels = guild.channels.cache.filter(
+      c => c.parentId === RECRUITMENT_CATEGORY_ID && c.name.startsWith('recrutement-')
+    );
+    const ticketNum = String(recruitChannels.size + 1).padStart(3, '0');
+    const channelName = `recrutement-${ticketNum}`;
+
+    // Créer le salon de ticket
+    const channel = await guild.channels.create({
+      name: channelName,
+      type: 0,
+      parent: RECRUITMENT_CATEGORY_ID,
+      topic: `Candidature de ${first_name} ${last_name} — ${discord_username}`,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionsBitField.Flags.ViewChannel],
+        },
+        {
+          id: member.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory,
+          ],
+        },
+        {
+          id: client.user.id,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ManageChannels,
+            PermissionsBitField.Flags.ManageMessages,
+          ],
+        },
+      ],
+    });
+
+    // Construire la liste des disponibilités
+    let availabilityText = 'Non renseignée';
+    if (availability && typeof availability === 'object') {
+      const days = Object.entries(availability)
+        .filter(([, val]) => val && val.start && val.end)
+        .map(([day, val]) => `• **${day}** : ${val.start} → ${val.end}`);
+      availabilityText = days.length > 0 ? days.join('\n') : 'Aucune disponibilité indiquée';
+    }
+
+    // Embed de la candidature
+    const recruitEmbed = new EmbedBuilder()
+      .setColor(0xCC1A1A)
+      .setTitle(`📋 Candidature — ${first_name} ${last_name}`)
+      .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+      .addFields(
+        { name: '👤 Prénom & Nom', value: `${first_name} ${last_name}`, inline: true },
+        { name: '🎂 Âge', value: String(age), inline: true },
+        { name: '📞 Téléphone', value: phone, inline: true },
+        { name: '🎮 Discord', value: `<@${member.user.id}> (\`${discord_username}\`)`, inline: false },
+        { name: '💼 Expérience dans le domaine', value: experience || 'Aucune', inline: false },
+        { name: '📅 Disponibilités', value: availabilityText, inline: false },
+        { name: '💬 Motivations', value: motivations, inline: false },
+        { name: '⚠️ Pire défauts', value: worst_flaws, inline: false },
+      )
+      .setFooter({ text: 'Burger Shot — Recrutement RH 🍔' })
+      .setTimestamp();
+
+    const commandsHelp = [
+      '**━━━ COMMANDES RECRUTEMENT ━━━**',
+      '`^^accepter` — Accepter la candidature (ticket renommé en recrutement-XXX-accepter)',
+      '`^^refuser` — Refuser la candidature (ticket renommé en recrutement-XXX-refuser)',
+      '`^^close` — Fermer le ticket (retire l\'accès au candidat)',
+      '`^^delete` — Supprimer définitivement le ticket',
+      '`^^en_attente` — Informer le candidat que sa candidature est en cours de visionnage',
+      '`^^entretien <date et heure>` — Fixer un entretien avec le candidat',
+    ].join('\n');
+
+    await channel.send({ content: `<@${member.user.id}>`, embeds: [recruitEmbed] });
+    await channel.send(commandsHelp);
+
+    // DM de confirmation au candidat
+    try {
+      const dmEmbed = new EmbedBuilder()
+        .setColor(0xF5A623)
+        .setTitle('🍔 Candidature reçue — Burger Shot')
+        .setDescription(`Ta candidature a bien été reçue ! Un ticket a été créé : <#${channel.id}>`)
+        .addFields(
+          { name: '👤 Nom', value: `${first_name} ${last_name}`, inline: true },
+          { name: '📌 Statut', value: '⏳ En attente de traitement', inline: true },
+        )
+        .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+        .setTimestamp();
+      await member.user.send({ embeds: [dmEmbed] });
+    } catch (dmErr) {
+      console.warn('DM recrutement impossible:', dmErr.message);
+    }
+
+    console.log(`✅ Ticket recrutement créé : #${channelName} pour ${first_name} ${last_name}`);
+
+    return res.json({
+      success: true,
+      channel_id: channel.id,
+      channel_name: channelName,
+      discord_user_id: member.user.id
+    });
+
+  } catch (err) {
+    console.error('Erreur recrutement:', err);
+    return res.json({ success: false, error: err.message });
+  }
+});
 
 // API : Vérification username Discord
 app.post('/api/verify-discord', async (req, res) => {
@@ -391,6 +542,8 @@ if (RENDER_URL) {
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const ORDERS_CATEGORY_ID = process.env.ORDERS_CATEGORY_ID;
+const RECRUITMENT_CATEGORY_ID = '1491379454331846808';
+const BLOCKED_ROLE_ID = '1467127476068159539'; // Ce rôle ne peut PAS utiliser les commandes recrutement
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
@@ -569,110 +722,344 @@ async function notifyClient(order, statusLabel, extraMessage = null) {
   }
 }
 
+// ── Extraire le discord_user_id depuis un salon recrutement ──
+async function getRecruitmentDiscordUserId(channel) {
+  // Cherche les overwrites de permissions pour trouver l'ID du membre
+  const memberOverwrite = channel.permissionOverwrites.cache.find(
+    ow => ow.type === 1 && ow.id !== client.user.id // type 1 = membre
+  );
+  return memberOverwrite ? memberOverwrite.id : null;
+}
+
 // ── COMMANDES DISCORD ─────────────────────────
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   const content = message.content.trim();
   const channelName = message.channel.name || '';
-  if (!channelName.startsWith('commande-')) return;
 
-  const { data: order } = await supabase
-    .from('orders_burgershot')
-    .select('*')
-    .eq('discord_channel_id', message.channel.id)
-    .single();
+  // ══════════════════════════════════════════════
+  // COMMANDES COMMANDES (tickets commande-)
+  // ══════════════════════════════════════════════
+  if (channelName.startsWith('commande-')) {
+    const { data: order } = await supabase
+      .from('orders_burgershot')
+      .select('*')
+      .eq('discord_channel_id', message.channel.id)
+      .single();
 
-  if (!order) return;
+    if (!order) return;
 
-  if (content === '^^accepter') {
-    await supabase.from('orders_burgershot').update({ status: 'acceptee' }).eq('id', order.id);
-    await notifyClient({ ...order, status: 'acceptee' }, STATUS_LABELS['acceptee']);
-    const embed = new EmbedBuilder().setColor(0x22c55e).setTitle('✅ Commande acceptée').setDescription(`Commande #${order.id} → **${STATUS_LABELS['acceptee']}**`).setTimestamp();
-    await message.channel.send({ embeds: [embed] });
-    await message.react('✅');
-    return;
+    if (content === '^^accepter') {
+      await supabase.from('orders_burgershot').update({ status: 'acceptee' }).eq('id', order.id);
+      await notifyClient({ ...order, status: 'acceptee' }, STATUS_LABELS['acceptee']);
+      const embed = new EmbedBuilder().setColor(0x22c55e).setTitle('✅ Commande acceptée').setDescription(`Commande #${order.id} → **${STATUS_LABELS['acceptee']}**`).setTimestamp();
+      await message.channel.send({ embeds: [embed] });
+      await message.react('✅');
+      return;
+    }
+
+    if (content.startsWith('^^refuser')) {
+      const reason = content.slice('^^refuser'.length).trim() || 'Aucune raison';
+      await supabase.from('orders_burgershot').update({ status: 'refusee', refusal_reason: reason }).eq('id', order.id);
+
+      if (order.discord_user_id) {
+        try {
+          const user = await client.users.fetch(order.discord_user_id);
+          const embed = new EmbedBuilder()
+            .setColor(0xef4444)
+            .setTitle(`❌ Commande #${order.id} refusée`)
+            .addFields({ name: 'Raison', value: reason })
+            .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+            .setTimestamp();
+          await user.send({ embeds: [embed] });
+        } catch (e) {}
+      }
+      const embed = new EmbedBuilder().setColor(0xef4444).setTitle('❌ Commande refusée').setDescription(`Commande #${order.id} refusée\nRaison : ${reason}`).setTimestamp();
+      await message.channel.send({ embeds: [embed] });
+      await message.react('❌');
+      return;
+    }
+
+    const statusMap = {
+      '^^recue': 'recue',
+      '^^preparation': 'preparation',
+      '^^finalisation': 'finalisation',
+      '^^terminer': 'termine',
+      '^^livraison': 'livraison',
+      '^^regler': 'reglee',
+    };
+
+    if (statusMap[content]) {
+      if (content === '^^livraison' && order.delivery_type !== 'livraison') {
+        return message.reply('❌ Cette commande n\'est pas en livraison.');
+      }
+      const newStatus = statusMap[content];
+      await supabase.from('orders_burgershot').update({ status: newStatus }).eq('id', order.id);
+      await notifyClient({ ...order }, STATUS_LABELS[newStatus]);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x22c55e)
+        .setTitle('📌 Statut mis à jour')
+        .setDescription(`Commande #${order.id} → **${STATUS_LABELS[newStatus]}**`)
+        .setTimestamp();
+      await message.channel.send({ embeds: [embed] });
+      await message.react('✅');
+      return;
+    }
+
+    if (content.startsWith('^^contact ')) {
+      const msg = content.slice('^^contact '.length).trim();
+      if (!msg) return message.reply('❌ Syntaxe : `^^contact <message>`');
+
+      await supabase.from('orders_burgershot').update({ ml_message: msg }).eq('id', order.id);
+      await supabase.from('discord_messages_burgershot').insert({
+        order_id: order.id,
+        direction: 'out',
+        content: msg,
+      });
+
+      if (order.discord_user_id) {
+        try {
+          const user = await client.users.fetch(order.discord_user_id);
+          const dmEmbed = new EmbedBuilder()
+            .setColor(0x4f7af8)
+            .setTitle(`💬 Message équipe — Commande #${order.id}`)
+            .setDescription(msg)
+            .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+            .setTimestamp();
+          await user.send({ embeds: [dmEmbed] });
+        } catch (e) {}
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x4f7af8)
+        .setTitle('💬 Message envoyé')
+        .setDescription(msg)
+        .setTimestamp();
+      await message.channel.send({ embeds: [embed] });
+      await message.react('📨');
+    }
+
+    return; // fin des commandes commande-
   }
 
-  if (content.startsWith('^^refuser')) {
-    const reason = content.slice('^^refuser'.length).trim() || 'Aucune raison';
-    await supabase.from('orders_burgershot').update({ status: 'refusee', refusal_reason: reason }).eq('id', order.id);
+  // ══════════════════════════════════════════════
+  // COMMANDES RECRUTEMENT (tickets recrutement-)
+  // ══════════════════════════════════════════════
+  if (channelName.startsWith('recrutement-')) {
 
-    if (order.discord_user_id) {
+    // Vérification : le rôle bloqué ne peut pas utiliser les commandes ^^
+    if (content.startsWith('^^')) {
+      const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+      if (member && member.roles.cache.has(BLOCKED_ROLE_ID)) {
+        return message.reply('❌ Tu n\'as pas la permission d\'utiliser les commandes de recrutement.');
+      }
+    }
+
+    // Extraire le numéro du ticket depuis le nom du salon
+    const ticketNumMatch = channelName.match(/recrutement-(\d+)/);
+    const ticketNum = ticketNumMatch ? ticketNumMatch[1] : '000';
+
+    // Récupérer le discord_user_id du candidat (via les overwrites du salon)
+    const candidateDiscordId = await getRecruitmentDiscordUserId(message.channel);
+
+    // ── ^^accepter ──
+    if (content === '^^accepter') {
       try {
-        const user = await client.users.fetch(order.discord_user_id);
+        await message.channel.setName(`recrutement-${ticketNum}-accepter`);
+
+        const embed = new EmbedBuilder()
+          .setColor(0x22c55e)
+          .setTitle('✅ Candidature Acceptée — Burger Shot RH')
+          .setDescription('Félicitations ! Ta candidature a été **acceptée** par notre équipe RH.\nUn membre de l\'équipe te contactera prochainement pour la suite.')
+          .setFooter({ text: 'Burger Shot — Recrutement RH 🍔' })
+          .setTimestamp();
+
+        await message.channel.send({ embeds: [embed] });
+
+        if (candidateDiscordId) {
+          try {
+            const user = await client.users.fetch(candidateDiscordId);
+            const dmEmbed = new EmbedBuilder()
+              .setColor(0x22c55e)
+              .setTitle('✅ Candidature Acceptée — Burger Shot')
+              .setDescription('Félicitations ! Ta candidature chez **Burger Shot** a été acceptée !\nUn membre RH te contactera prochainement.')
+              .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {}
+        }
+
+        await message.react('✅');
+      } catch (err) {
+        console.error('Erreur ^^accepter recrutement:', err);
+        await message.reply('❌ Erreur lors de l\'acceptation.');
+      }
+      return;
+    }
+
+    // ── ^^refuser ──
+    if (content === '^^refuser') {
+      try {
+        await message.channel.setName(`recrutement-${ticketNum}-refuser`);
+
+        // Retirer l'accès au candidat
+        if (candidateDiscordId) {
+          await message.channel.permissionOverwrites.edit(candidateDiscordId, {
+            ViewChannel: false,
+          });
+          try {
+            const user = await client.users.fetch(candidateDiscordId);
+            const dmEmbed = new EmbedBuilder()
+              .setColor(0xef4444)
+              .setTitle('❌ Candidature Refusée — Burger Shot')
+              .setDescription('Nous sommes désolés, ta candidature chez **Burger Shot** n\'a pas été retenue.\nNous te souhaitons bonne chance dans tes futures démarches.')
+              .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {}
+        }
+
         const embed = new EmbedBuilder()
           .setColor(0xef4444)
-          .setTitle(`❌ Commande #${order.id} refusée`)
-          .addFields({ name: 'Raison', value: reason })
-          .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+          .setTitle('❌ Candidature Refusée')
+          .setDescription('La candidature a été refusée et le candidat a perdu l\'accès au ticket.')
+          .setFooter({ text: 'Burger Shot — Recrutement RH 🍔' })
           .setTimestamp();
-        await user.send({ embeds: [embed] });
-      } catch (e) {}
+
+        await message.channel.send({ embeds: [embed] });
+        await message.react('❌');
+      } catch (err) {
+        console.error('Erreur ^^refuser recrutement:', err);
+        await message.reply('❌ Erreur lors du refus.');
+      }
+      return;
     }
-    const embed = new EmbedBuilder().setColor(0xef4444).setTitle('❌ Commande refusée').setDescription(`Commande #${order.id} refusée\nRaison : ${reason}`).setTimestamp();
-    await message.channel.send({ embeds: [embed] });
-    await message.react('❌');
-    return;
-  }
 
-  const statusMap = {
-    '^^recue': 'recue',
-    '^^preparation': 'preparation',
-    '^^finalisation': 'finalisation',
-    '^^terminer': 'termine',
-    '^^livraison': 'livraison',
-    '^^regler': 'reglee',
-  };
-
-  if (statusMap[content]) {
-    if (content === '^^livraison' && order.delivery_type !== 'livraison') {
-      return message.reply('❌ Cette commande n\'est pas en livraison.');
-    }
-    const newStatus = statusMap[content];
-    await supabase.from('orders_burgershot').update({ status: newStatus }).eq('id', order.id);
-    await notifyClient({ ...order }, STATUS_LABELS[newStatus]);
-
-    const embed = new EmbedBuilder()
-      .setColor(0x22c55e)
-      .setTitle('📌 Statut mis à jour')
-      .setDescription(`Commande #${order.id} → **${STATUS_LABELS[newStatus]}**`)
-      .setTimestamp();
-    await message.channel.send({ embeds: [embed] });
-    await message.react('✅');
-    return;
-  }
-
-  if (content.startsWith('^^contact ')) {
-    const msg = content.slice('^^contact '.length).trim();
-    if (!msg) return message.reply('❌ Syntaxe : `^^contact <message>`');
-
-    await supabase.from('orders_burgershot').update({ ml_message: msg }).eq('id', order.id);
-    await supabase.from('discord_messages_burgershot').insert({
-      order_id: order.id,
-      direction: 'out',
-      content: msg,
-    });
-
-    if (order.discord_user_id) {
+    // ── ^^close ──
+    if (content === '^^close') {
       try {
-        const user = await client.users.fetch(order.discord_user_id);
-        const dmEmbed = new EmbedBuilder()
-          .setColor(0x4f7af8)
-          .setTitle(`💬 Message équipe — Commande #${order.id}`)
-          .setDescription(msg)
-          .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+        // Retirer l'accès au candidat sans supprimer le salon
+        if (candidateDiscordId) {
+          await message.channel.permissionOverwrites.edit(candidateDiscordId, {
+            ViewChannel: false,
+          });
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(0x888888)
+          .setTitle('🔒 Ticket fermé')
+          .setDescription('Le ticket a été fermé. Le candidat n\'a plus accès à ce salon.')
+          .setFooter({ text: 'Burger Shot — Recrutement RH 🍔' })
           .setTimestamp();
-        await user.send({ embeds: [dmEmbed] });
-      } catch (e) {}
+
+        await message.channel.send({ embeds: [embed] });
+        await message.react('🔒');
+      } catch (err) {
+        console.error('Erreur ^^close:', err);
+        await message.reply('❌ Erreur lors de la fermeture.');
+      }
+      return;
     }
 
-    const embed = new EmbedBuilder()
-      .setColor(0x4f7af8)
-      .setTitle('💬 Message envoyé')
-      .setDescription(msg)
-      .setTimestamp();
-    await message.channel.send({ embeds: [embed] });
-    await message.react('📨');
+    // ── ^^delete ──
+    if (content === '^^delete') {
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(0xef4444)
+          .setTitle('🗑️ Suppression du ticket')
+          .setDescription('Ce ticket sera supprimé dans **5 secondes**...')
+          .setTimestamp();
+
+        await message.channel.send({ embeds: [embed] });
+        await message.react('🗑️');
+
+        setTimeout(async () => {
+          try {
+            await message.channel.delete();
+          } catch (e) {
+            console.warn('Impossible de supprimer le salon:', e.message);
+          }
+        }, 5000);
+      } catch (err) {
+        console.error('Erreur ^^delete:', err);
+        await message.reply('❌ Erreur lors de la suppression.');
+      }
+      return;
+    }
+
+    // ── ^^en_attente ──
+    if (content === '^^en_attente') {
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(0xF5A623)
+          .setTitle('⏳ Candidature en cours de traitement — Burger Shot RH')
+          .setDescription('Votre candidature est actuellement **en cours de visionnage** par notre équipe RH.\n\nNous reviendrons vers vous dans les plus brefs délais. Merci de votre patience !')
+          .setFooter({ text: 'Burger Shot — Recrutement RH 🍔' })
+          .setTimestamp();
+
+        const mention = candidateDiscordId ? `<@${candidateDiscordId}>` : '';
+        await message.channel.send({ content: mention, embeds: [embed] });
+
+        if (candidateDiscordId) {
+          try {
+            const user = await client.users.fetch(candidateDiscordId);
+            const dmEmbed = new EmbedBuilder()
+              .setColor(0xF5A623)
+              .setTitle('⏳ Candidature en cours de traitement — Burger Shot')
+              .setDescription('Votre candidature est en cours de visionnage par notre équipe RH.\nNous vous contacterons prochainement.')
+              .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {}
+        }
+
+        await message.react('⏳');
+      } catch (err) {
+        console.error('Erreur ^^en_attente:', err);
+        await message.reply('❌ Erreur lors de l\'envoi.');
+      }
+      return;
+    }
+
+    // ── ^^entretien <date et heure> ──
+    if (content.startsWith('^^entretien ')) {
+      const datetime = content.slice('^^entretien '.length).trim();
+      if (!datetime) {
+        return message.reply('❌ Syntaxe : `^^entretien <date et heure>` — Ex: `^^entretien Samedi 12 Avril à 18h00`');
+      }
+
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(0x4f7af8)
+          .setTitle('📅 Entretien fixé — Burger Shot RH')
+          .setDescription(`Un entretien a été fixé avec notre équipe RH.\n\n**📆 Date & Heure :** ${datetime}\n\nMerci d'être disponible à l'heure indiquée. En cas d'empêchement, contactez-nous au plus vite.`)
+          .setFooter({ text: 'Burger Shot — Recrutement RH 🍔' })
+          .setTimestamp();
+
+        const mention = candidateDiscordId ? `<@${candidateDiscordId}>` : '';
+        await message.channel.send({ content: mention, embeds: [embed] });
+
+        if (candidateDiscordId) {
+          try {
+            const user = await client.users.fetch(candidateDiscordId);
+            const dmEmbed = new EmbedBuilder()
+              .setColor(0x4f7af8)
+              .setTitle('📅 Entretien fixé — Burger Shot')
+              .setDescription(`Un entretien a été fixé avec l'équipe RH de **Burger Shot** !\n\n**📆 Date & Heure :** ${datetime}\n\nSois disponible à l'heure indiquée. En cas d'empêchement, contacte-nous.`)
+              .setFooter({ text: 'Burger Shot — Le goût qui te tire dessus 🔥' })
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {}
+        }
+
+        await message.react('📅');
+      } catch (err) {
+        console.error('Erreur ^^entretien:', err);
+        await message.reply('❌ Erreur lors de la fixation de l\'entretien.');
+      }
+      return;
+    }
   }
 });
 
