@@ -59,6 +59,29 @@ client.once('ready', async () => {
   console.log(`✅ Bot connecté : ${client.user.tag}`);
 });
 
+// ── RECONNEXION AUTOMATIQUE DISCORD ──────────
+client.on('shardDisconnect', (event, shardId) => {
+  console.warn(`⚠️ Shard ${shardId} déconnectée (code: ${event.code}). Reconnexion automatique...`);
+});
+
+client.on('shardError', (error) => {
+  console.error('❌ Erreur WebSocket Discord:', error.message);
+});
+
+client.on('error', (err) => {
+  console.error('❌ Erreur Discord client:', err.message);
+});
+
+// ── GESTION DES ERREURS NON CAPTURÉES ────────
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception:', err.message);
+  // On ne coupe pas le process pour garder le bot en vie
+});
+
 // ====================== ADMIN & PUBLIC API ======================
 
 // 1. Récupérer tous les aliments
@@ -173,7 +196,6 @@ app.post('/api/order', async (req, res) => {
       .single();
     if (error) return res.json({ success: false, error: error.message });
 
-    // Notification Discord si le bot est prêt
     try {
       await notifyNewOrder(order);
     } catch (notifErr) {
@@ -237,7 +259,7 @@ app.patch('/api/order/:id/status', async (req, res) => {
 
 // ====================== MESSAGERIE COMMANDES ======================
 
-// GET /api/order/:id/messages — Récupérer les messages d'une commande
+// GET /api/order/:id/messages
 app.get('/api/order/:id/messages', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -252,10 +274,9 @@ app.get('/api/order/:id/messages', async (req, res) => {
   }
 });
 
-// POST /api/order/:id/messages — Envoyer un message
+// POST /api/order/:id/messages
 app.post('/api/order/:id/messages', async (req, res) => {
   const { sender_type, sender_name, content } = req.body;
-  // sender_type: 'client' | 'employee'
   if (!sender_type || !content) return res.json({ success: false, error: 'Données manquantes' });
   try {
     const { data, error } = await supabase
@@ -270,7 +291,6 @@ app.post('/api/order/:id/messages', async (req, res) => {
       .single();
     if (error) return res.json({ success: false, error: error.message });
 
-    // Notifier via Discord DM si message employé → client
     try {
       if (sender_type === 'employee') {
         const { data: order } = await supabase.from('orders_burgershot').select('*').eq('id', req.params.id).single();
@@ -300,7 +320,6 @@ async function notifyNewOrder(order) {
   const guild = client.guilds.cache.get(GUILD_ID);
   if (!guild) return;
 
-  // Chercher un salon "commandes" ou "orders" dans le serveur
   const ordersChannel = guild.channels.cache.find(
     c => c.type === 0 && (c.name.includes('commande') || c.name.includes('order') || c.name.includes('cuisine'))
   );
@@ -327,7 +346,6 @@ async function notifyNewOrder(order) {
 
 // ====================== RECRUTEMENT API ======================
 
-// API : Vérification username Discord — AMÉLIORÉE
 app.post('/api/verify-discord', async (req, res) => {
   const { discord_username } = req.body;
   if (!discord_username) return res.json({ found: false, error: 'Manquant' });
@@ -335,7 +353,6 @@ app.post('/api/verify-discord', async (req, res) => {
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) return res.json({ found: false, error: 'Guild introuvable' });
 
-    // Force un fetch complet des membres
     try {
       await guild.members.fetch({ force: true });
     } catch (fetchErr) {
@@ -359,7 +376,6 @@ app.post('/api/verify-discord', async (req, res) => {
         tag: member.user.globalName || member.user.username || member.user.tag,
       });
     } else {
-      // Tentative de recherche par API Discord directement
       try {
         const results = await guild.members.search({ query: discord_username, limit: 10 });
         const match = results.find(m => {
@@ -385,7 +401,6 @@ app.post('/api/verify-discord', async (req, res) => {
   }
 });
 
-// API : Soumettre une candidature
 app.post('/api/recruitment', async (req, res) => {
   const { first_name, last_name, age, phone, discord_username, experience, availability, motivations, worst_flaws } = req.body;
   if (!first_name || !last_name || !age || !phone || !discord_username || !experience || !motivations || !worst_flaws)
@@ -395,7 +410,6 @@ app.post('/api/recruitment', async (req, res) => {
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) return res.json({ success: false, error: 'Serveur Discord introuvable' });
 
-    // Fetch forcé
     try { await guild.members.fetch({ force: true }); } catch {}
 
     const search = discord_username.toLowerCase().trim();
@@ -406,7 +420,6 @@ app.post('/api/recruitment', async (req, res) => {
       return uname === search || globalName === search || displayName === search;
     });
 
-    // Si pas trouvé dans le cache, tentative de recherche
     if (!member) {
       try {
         const results = await guild.members.search({ query: discord_username, limit: 10 });
@@ -648,6 +661,30 @@ async function getRecruitmentDiscordUserId(channel) {
   return memberOverwrite ? memberOverwrite.id : null;
 }
 
+// ── KEEP-ALIVE self-ping ──────────────────────
+// Configure SELF_URL dans tes variables d'environnement
+// Ex: SELF_URL=https://ton-app.onrender.com
+const SELF_URL = process.env.SELF_URL;
+
+function startKeepAlive() {
+  if (!SELF_URL) {
+    console.warn('[keep-alive] SELF_URL non défini — self-ping désactivé. Ajoute SELF_URL dans tes variables d\'environnement.');
+    return;
+  }
+
+  setInterval(async () => {
+    try {
+      const res = await fetch(`${SELF_URL}/ping`);
+      const data = await res.json();
+      console.log(`[keep-alive] ✅ ping OK — ${data.timestamp}`);
+    } catch (err) {
+      console.warn('[keep-alive] ⚠️ ping échoué:', err.message);
+    }
+  }, 10 * 60 * 1000); // toutes les 10 minutes
+
+  console.log(`[keep-alive] 🟢 Self-ping actif sur ${SELF_URL}/ping (toutes les 10 min)`);
+}
+
 // ── DÉMARRAGE ─────────────────────────────────
 const REQUIRED_ENV = ['DISCORD_TOKEN', 'GUILD_ID', 'SUPABASE_URL', 'SUPABASE_KEY'];
 for (const key of REQUIRED_ENV) {
@@ -656,4 +693,7 @@ for (const key of REQUIRED_ENV) {
 
 client.login(DISCORD_TOKEN).catch(err => { console.error('Erreur connexion Discord:', err); process.exit(1); });
 
-app.listen(PORT, () => { console.log(`🌐 Serveur Express actif sur le port ${PORT}`); });
+app.listen(PORT, () => {
+  console.log(`🌐 Serveur Express actif sur le port ${PORT}`);
+  startKeepAlive();
+});
